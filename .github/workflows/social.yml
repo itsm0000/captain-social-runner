@@ -1,0 +1,140 @@
+name: Social
+
+# The clock for CAPTAIN's social posting (docs/content/SOCIAL_PIPELINE.md in the private CAPTAIN repository).
+# This repository is public only because GitHub runs public repositories' timed jobs free; the private one ran
+# out of free Actions minutes on 20 Nov 2026. It holds no posts, scripts or data: each run checks out the poster
+# and the posts from CAPTAIN (main) and the run log (social-log) with a deploy key that reaches that repository
+# only, runs the job, and writes everything it printed into the private run log. These public pages show only
+# whether a run worked, never what it printed (comments carry people's words).
+#   post      09:00, 14:00, 18:00 UTC (12:00, 17:00, 21:00 Baghdad), each with one retry 25 minutes later
+#   comments  every two hours, at minute 40
+#   report    Mondays 06:15 UTC, the best posts of the week
+# It posts only what schedule.json in CAPTAIN lists as approved by the owner and due.
+on:
+  schedule:
+    - cron: "0 9,14,18 * * *"
+    - cron: "25 9,14,18 * * *"
+    - cron: "40 */2 * * *"
+    - cron: "15 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "post, comments or report"
+        required: true
+        default: post
+        type: choice
+        options: [post, comments, report]
+      dry:
+        description: "dry run (show what would happen, change nothing)"
+        type: boolean
+        default: false
+
+# One at a time: they all write the social-log branch.
+concurrency:
+  group: social
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  social:
+    # The switch: repository variable SOCIAL_ON. While it is not "true", timed runs are skipped.
+    if: (github.event_name == 'schedule' && vars.SOCIAL_ON == 'true') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Pick the job
+        id: pick
+        run: |
+          case "${{ github.event.schedule }}" in
+            "0 9,14,18 * * *"|"25 9,14,18 * * *") job=post ;;
+            "40 */2 * * *") job=comments ;;
+            "15 6 * * 1") job=report ;;
+            *) job="${{ inputs.job }}" ;;
+          esac
+          echo "job=$job" >> "$GITHUB_OUTPUT"
+          echo "dry=${{ inputs.dry && '--dry' || '' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the posts and the scripts (private)
+        uses: actions/checkout@v5
+        with:
+          repository: itsm0000/CAPTAIN
+          ssh-key: ${{ secrets.CAPTAIN_DEPLOY_KEY }}
+          sparse-checkout: |
+            scripts/social
+            docs/content/social
+          sparse-checkout-cone-mode: true
+
+      - name: Check out the run log (private)
+        uses: actions/checkout@v5
+        with:
+          repository: itsm0000/CAPTAIN
+          ssh-key: ${{ secrets.CAPTAIN_DEPLOY_KEY }}
+          ref: social-log
+          path: state
+
+      - name: Run (its output goes to the private run log only)
+        id: run
+        env:
+          SOCIAL_STATE: ${{ github.workspace }}/state
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          FB_PAGE_TOKEN: ${{ secrets.FB_PAGE_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_ORG: ${{ secrets.BUFFER_ORG }}
+          BUFFER_X_CHANNEL: ${{ secrets.BUFFER_X_CHANNEL }}
+          BUFFER_TIKTOK_CHANNEL: ${{ secrets.BUFFER_TIKTOK_CHANNEL }}
+          BUFFER_YOUTUBE_CHANNEL: ${{ secrets.BUFFER_YOUTUBE_CHANNEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          THREADS_REFRESHED: ${{ vars.THREADS_REFRESHED }}
+        run: |
+          set +e
+          case "${{ steps.pick.outputs.job }}" in
+            post)     python3 -I scripts/social/poster.py run ${{ steps.pick.outputs.dry }} ;;
+            comments) python3 -I scripts/social/comments.py run ${{ steps.pick.outputs.dry }} ;;
+            report)   python3 -I scripts/social/insights.py report ;;
+          esac > "$RUNNER_TEMP/out.log" 2>&1
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "${{ steps.pick.outputs.job }} finished with exit code $rc (what it printed is in the private run log)"
+
+      - name: Keep what it printed in the private run log
+        if: always() && steps.run.outcome != 'skipped'
+        run: |
+          cd state
+          git pull --rebase --quiet origin social-log || true
+          f="runs/$(date -u +%Y-%m)/$(date -u +%d-%H%M)-${{ steps.pick.outputs.job }}.log"
+          mkdir -p "$(dirname "$f")"
+          cp "$RUNNER_TEMP/out.log" "$f" 2>/dev/null || echo "no output" > "$f"
+          git add "$f"
+          git -c user.name=captain-social -c user.email=captain-social@users.noreply.github.com commit --quiet -m "runner: ${{ steps.pick.outputs.job }} output" || exit 0
+          for i in 1 2 3 4 5; do git push --quiet origin HEAD:social-log && exit 0; git pull --rebase --quiet origin social-log; sleep $((i * 3)); done
+          echo "::error::could not save the run log"; exit 1
+
+      - name: Fail the run when the job failed (GitHub e-mails the owner)
+        if: steps.run.outputs.rc != '0'
+        run: |
+          echo "::error::the ${{ steps.pick.outputs.job }} job failed; its output is in the private run log (social-log, runs/)"
+          exit 1
+
+      - name: Warn when a 60-day token is old or the Buffer key nears its end
+        if: always() && steps.pick.outputs.job == 'post'
+        env:
+          THREADS_REFRESHED: ${{ vars.THREADS_REFRESHED }}
+          BUFFER_KEY_EXPIRES: ${{ vars.BUFFER_KEY_EXPIRES }}
+        run: |
+          if [ -n "$BUFFER_KEY_EXPIRES" ]; then
+            left=$(( ( $(date -d "$BUFFER_KEY_EXPIRES" +%s) - $(date +%s) ) / 86400 ))
+            if [ "$left" -lt 30 ]; then echo "::error::The Buffer API key ends in $left days; regenerate it (SOCIAL_PIPELINE.md §1.1)"; exit 1; fi
+          fi
+          if [ -n "$THREADS_REFRESHED" ]; then
+            age=$(( ( $(date +%s) - $(date -d "$THREADS_REFRESHED" +%s) ) / 86400 ))
+            echo "Threads token is $age days old"
+            if [ "$age" -gt 50 ]; then echo "::error::The Threads token is $age days old; run meta.py refresh on the PC"; exit 1; fi
+          fi
