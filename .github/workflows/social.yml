@@ -92,6 +92,7 @@ jobs:
           BUFFER_X_CHANNEL: ${{ secrets.BUFFER_X_CHANNEL }}
           BUFFER_TIKTOK_CHANNEL: ${{ secrets.BUFFER_TIKTOK_CHANNEL }}
           BUFFER_YOUTUBE_CHANNEL: ${{ secrets.BUFFER_YOUTUBE_CHANNEL }}
+          BUNDLE_API_KEY: ${{ secrets.BUNDLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           THREADS_REFRESHED: ${{ vars.THREADS_REFRESHED }}
         run: |
