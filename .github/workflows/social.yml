@@ -6,14 +6,15 @@ name: Social
 # and the posts from CAPTAIN (main) and the run log (social-log) with a deploy key that reaches that repository
 # only, runs the job, and writes everything it printed into the private run log. These public pages show only
 # whether a run worked, never what it printed (comments carry people's words).
-#   post      09:00, 14:00, 18:00 UTC (12:00, 17:00, 21:00 Baghdad), each with one retry 25 minutes later
+#   post      every 15 minutes for three hours from each posting time, 09:02, 14:02 and 18:02 UTC (12:00, 17:00,
+#             21:00 Baghdad): GitHub delays or drops timed runs, most of all at the top of the hour and on a new
+#             repository (22 Nov 2026: 2 of about 10 ran, one 76 minutes late). A post goes out once; later runs skip it.
 #   comments  every two hours, at minute 40
 #   report    Mondays 06:15 UTC, the best posts of the week
 # It posts only what schedule.json in CAPTAIN lists as approved by the owner and due.
 on:
   schedule:
-    - cron: "0 9,14,18 * * *"
-    - cron: "25 9,14,18 * * *"
+    - cron: "2,17,32,47 9-11,14-16,18-20 * * *"
     - cron: "40 */2 * * *"
     - cron: "15 6 * * 1"
   workflow_dispatch:
@@ -48,7 +49,7 @@ jobs:
         id: pick
         run: |
           case "${{ github.event.schedule }}" in
-            "0 9,14,18 * * *"|"25 9,14,18 * * *") job=post ;;
+            "2,17,32,47 9-11,14-16,18-20 * * *") job=post ;;
             "40 */2 * * *") job=comments ;;
             "15 6 * * 1") job=report ;;
             *) job="${{ inputs.job }}" ;;
