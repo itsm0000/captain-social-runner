@@ -20,11 +20,11 @@ on:
   workflow_dispatch:
     inputs:
       job:
-        description: "post, comments or report"
+        description: "tick (the outside timer: whatever is due), post, comments or report"
         required: true
         default: post
         type: choice
-        options: [post, comments, report]
+        options: [tick, post, comments, report]
       dry:
         description: "dry run (show what would happen, change nothing)"
         type: boolean
@@ -54,6 +54,14 @@ jobs:
             "15 6 * * 1") job=report ;;
             *) job="${{ inputs.job }}" ;;
           esac
+          # "tick": cron-job.org calls this every 15 minutes (GitHub's own timer drops most runs, 23 Nov 2026).
+          # It posts what is due, the comments on even UTC hours and the report on Monday morning.
+          if [ "$job" = tick ]; then
+            h=$(date -u +%-H); m=$(date -u +%-M); dow=$(date -u +%u)
+            if [ "$dow" = 1 ] && [ "$h" = 6 ] && [ "$m" -lt 15 ]; then job=report
+            elif [ $((h % 2)) = 0 ] && [ "$m" -lt 15 ]; then job=post+comments
+            else job=post; fi
+          fi
           echo "job=$job" >> "$GITHUB_OUTPUT"
           echo "dry=${{ inputs.dry && '--dry' || '' }}" >> "$GITHUB_OUTPUT"
 
@@ -99,6 +107,8 @@ jobs:
           set +e
           case "${{ steps.pick.outputs.job }}" in
             post)     python3 -I scripts/social/poster.py run ${{ steps.pick.outputs.dry }} ;;
+            post+comments) python3 -I scripts/social/poster.py run ${{ steps.pick.outputs.dry }}; r1=$?
+                      python3 -I scripts/social/comments.py run ${{ steps.pick.outputs.dry }}; r2=$?; [ $r1 = 0 ] && [ $r2 = 0 ] ;;
             comments) python3 -I scripts/social/comments.py run ${{ steps.pick.outputs.dry }} ;;
             report)   python3 -I scripts/social/insights.py report ;;
           esac > "$RUNNER_TEMP/out.log" 2>&1
@@ -126,7 +136,7 @@ jobs:
           exit 1
 
       - name: Warn when a 60-day token is old or the Buffer key nears its end
-        if: always() && steps.pick.outputs.job == 'post'
+        if: always() && startsWith(steps.pick.outputs.job, 'post')
         env:
           THREADS_REFRESHED: ${{ vars.THREADS_REFRESHED }}
           BUFFER_KEY_EXPIRES: ${{ vars.BUFFER_KEY_EXPIRES }}
